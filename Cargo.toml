@@ -1,0 +1,14 @@
+[package]
+name = "private-search-engines"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+reqwest = "0.12.24"
+scraper = "0.24.0"
+serde = "1.0.228"
+sqlx = { version = "=0.8.1", features = ["runtime-tokio", "sqlite", "chrono"] }
+chrono = { version = "0.4.42", features = ["serde"] }
+strum = { version = "0.27.2", features = ["derive"] }
+percent-encoding = "2.3.2"
+regex = "1.12.2"
