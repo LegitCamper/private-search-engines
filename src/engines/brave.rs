@@ -30,9 +30,7 @@ pub fn parse_response(html: &str) -> Result<Vec<ResultRow>, EngineError> {
         ".generic-snippet, .video-snippet > .snippet-description",
     );
 
-    let results = parser.parse(html);
-
-    Ok(results)
+    Ok(parser.parse(html))
 }
 
 #[cfg(test)]

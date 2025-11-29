@@ -2,7 +2,7 @@ use percent_encoding::percent_decode;
 use reqwest::Url;
 use scraper::{ElementRef, Html, Selector};
 
-use crate::engines::{Engine, EngineError, Engines, cache::ResultRow, new_rand_client};
+use crate::engines::{Engine, EngineError, Engines, HtmlParser, cache::ResultRow, new_rand_client};
 
 pub struct DuckDuckGo;
 
@@ -12,7 +12,6 @@ impl Engine for DuckDuckGo {
     }
 
     async fn search(query: &str) -> Result<Vec<ResultRow>, EngineError> {
-        let mut results: Vec<ResultRow> = Vec::new();
         let resp = new_rand_client()
             .map_err(EngineError::ReqwestError)?
             .get(&format!("https://html.duckduckgo.com/html?q={}", query))
@@ -20,116 +19,29 @@ impl Engine for DuckDuckGo {
             .await
             .map_err(EngineError::ReqwestError)?;
 
-        let html = resp.text().await.map_err(EngineError::ReqwestError)?;
-
-        parse(&mut results, &html)?;
-
-        Ok(results)
+        parse_response(&resp.text().await.map_err(EngineError::ReqwestError)?)
     }
 }
 
-fn parse(results: &mut Vec<ResultRow>, document: &str) -> Result<usize, EngineError> {
-    let mut number_results = 0;
+pub fn parse_response(html: &str) -> Result<Vec<ResultRow>, EngineError> {
+    let parser = HtmlParser::new(
+        ".serp__results .result",
+        ".result__a",
+        ".result__a",
+        ".result__snippet",
+    );
 
-    let links_sel = Selector::parse("#links").unwrap();
-    let result_sel = Selector::parse("div.result").unwrap();
-    let title_sel = Selector::parse("h2 a").unwrap();
-    let url_sel = Selector::parse("a.result__url").unwrap();
+    let results = parser
+        .parse(html)
+        .into_iter()
+        .filter(|r| !is_sponsored(&r.url))
+        .map(|mut r| {
+            r.url = extract_ddg_url(&r.url).unwrap();
+            r
+        })
+        .collect();
 
-    let document = Html::parse_document(&document);
-
-    if let Some(links) = document.select(&links_sel).next() {
-        for result in links.select(&result_sel) {
-            // Title
-            let title = result
-                .select(&title_sel)
-                .next()
-                .map(|t| t.text().collect::<String>())
-                .unwrap_or_default();
-
-            // URL from result__url
-            let url = result
-                .select(&url_sel)
-                .next()
-                .and_then(|u| u.value().attr("href"))
-                .map(|href| extract_ddg_url(href).unwrap_or_else(|| href.to_string()))
-                .unwrap_or_default();
-
-            if is_sponsored(&url) {
-                continue;
-            }
-
-            let snippet = extract_snippet(&result);
-
-            number_results += 1;
-            results.push(ResultRow {
-                url,
-                title,
-                description: snippet,
-            });
-        }
-    }
-
-    Ok(number_results)
-}
-
-fn collect_text(element: &ElementRef) -> String {
-    let mut text = String::new();
-
-    for child in element.children() {
-        if let Some(el) = child.value().as_element() {
-            // Skip h2 (title) and result__url
-            let tag = el.name();
-            let classes = el.attr("class").unwrap_or("");
-            if tag == "h2" || classes.contains("result__url") {
-                continue;
-            }
-
-            if let Some(el_ref) = ElementRef::wrap(child) {
-                let child_text = collect_text(&el_ref);
-                if !child_text.is_empty() {
-                    if !text.is_empty() {
-                        text.push(' ');
-                    }
-                    text.push_str(&child_text);
-                }
-            }
-        } else if let Some(t) = child.value().as_text() {
-            let t = t.trim();
-            if !t.is_empty() {
-                if !text.is_empty() {
-                    text.push(' ');
-                }
-                text.push_str(t);
-            }
-        }
-    }
-
-    text
-}
-
-fn extract_snippet(result: &ElementRef) -> String {
-    let mut snippet = String::new();
-
-    for child in result.children() {
-        if let Some(el) = child.value().as_element() {
-            let tag = el.name();
-            let classes = el.attr("class").unwrap_or("");
-            if tag == "h2" || classes.contains("result__url") {
-                continue; // skip title and url
-            }
-        }
-
-        if let Some(el_ref) = ElementRef::wrap(child) {
-            snippet.push_str(&collect_text(&el_ref));
-            snippet.push(' ');
-        } else if let Some(text) = child.value().as_text() {
-            snippet.push_str(text.trim());
-            snippet.push(' ');
-        }
-    }
-
-    snippet.trim().to_string()
+    Ok(results)
 }
 
 fn extract_ddg_url(ddg_href: &str) -> Option<String> {
