@@ -1,8 +1,8 @@
 use percent_encoding::percent_decode;
-use reqwest::{Client, Url};
+use reqwest::Url;
 use scraper::{ElementRef, Html, Selector};
 
-use crate::engines::{Engine, EngineError, Engines, cache::ResultRow};
+use crate::engines::{Engine, EngineError, Engines, cache::ResultRow, new_rand_client};
 
 pub struct DuckDuckGo;
 
@@ -13,17 +13,14 @@ impl Engine for DuckDuckGo {
 
     async fn search(query: &str) -> Result<Vec<ResultRow>, EngineError> {
         let mut results: Vec<ResultRow> = Vec::new();
-        let client = Client::builder()
-            .build()
-            .map_err(EngineError::ReqwestError)?;
-
-        let req = client
+        let resp = new_rand_client()
+            .map_err(EngineError::ReqwestError)?
             .get(&format!("https://html.duckduckgo.com/html?q={}", query))
             .send()
             .await
             .map_err(EngineError::ReqwestError)?;
 
-        let html = req.text().await.map_err(EngineError::ReqwestError)?;
+        let html = resp.text().await.map_err(EngineError::ReqwestError)?;
 
         parse(&mut results, &html)?;
 
@@ -154,4 +151,20 @@ fn is_sponsored(ddg_href: &str) -> bool {
         return true;
     }
     false
+}
+
+#[cfg(test)]
+mod test {
+    #[ignore]
+    #[tokio::test]
+    async fn test_duckduckgo_live() {
+        use super::{DuckDuckGo, Engine};
+        let results = DuckDuckGo::search("rust async").await.unwrap();
+        assert!(!results.is_empty());
+
+        println!("Results: ");
+        for result in results {
+            println!("{:?}", result);
+        }
+    }
 }

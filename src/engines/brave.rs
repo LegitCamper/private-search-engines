@@ -1,9 +1,6 @@
-use reqwest::Client;
-use scraper::{Html, Selector};
-
 use crate::{
     cache::ResultRow,
-    engines::{Engine, EngineError, Engines},
+    engines::{Engine, EngineError, Engines, HtmlParser, new_rand_client},
 };
 
 pub struct Brave;
@@ -14,7 +11,8 @@ impl Engine for Brave {
     }
 
     async fn search(query: &str) -> Result<Vec<ResultRow>, EngineError> {
-        let resp = Client::new()
+        let resp = new_rand_client()
+            .map_err(EngineError::ReqwestError)?
             .get(&format!("https://search.brave.com/search?q={}", query))
             .send()
             .await
@@ -24,38 +22,31 @@ impl Engine for Brave {
     }
 }
 
-pub fn parse_response(body: &str) -> Result<Vec<ResultRow>, EngineError> {
-    let result = Selector::parse("#results > .snippet[data-pos]:not(.standalone)").unwrap();
-    let title = Selector::parse(".title").unwrap();
-    let url = Selector::parse("a").unwrap();
-    let description =
-        Selector::parse(".generic-snippet, .video-snippet > .snippet-description").unwrap();
+pub fn parse_response(html: &str) -> Result<Vec<ResultRow>, EngineError> {
+    let parser = HtmlParser::new(
+        "#results > .snippet[data-pos]:not(.standalone)",
+        ".title",
+        "a",
+        ".generic-snippet, .video-snippet > .snippet-description",
+    );
 
-    let html = Html::parse_document(body);
-
-    let mut results = Vec::new();
-
-    for result in html.select(&result) {
-        results.push(ResultRow {
-            url: result
-                .select(&url)
-                .next()
-                .map(|t| t.text().collect::<String>())
-                .unwrap_or_default(),
-
-            title: result
-                .select(&title)
-                .next()
-                .map(|t| t.text().collect::<String>())
-                .unwrap_or_default(),
-
-            description: result
-                .select(&description)
-                .next()
-                .map(|t| t.text().collect::<String>())
-                .unwrap_or_default(),
-        })
-    }
+    let results = parser.parse(html);
 
     Ok(results)
+}
+
+#[cfg(test)]
+mod test {
+    #[ignore]
+    #[tokio::test]
+    async fn test_brave_live() {
+        use super::{Brave, Engine};
+        let results = Brave::search("rust async").await.unwrap();
+        assert!(!results.is_empty());
+
+        println!("Results: ");
+        for result in results {
+            println!("{:?}", result);
+        }
+    }
 }
