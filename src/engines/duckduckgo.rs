@@ -1,6 +1,5 @@
 use percent_encoding::percent_decode;
 use reqwest::Url;
-use scraper::{ElementRef, Html, Selector};
 
 use crate::engines::{Engine, EngineError, Engines, HtmlParser, cache::ResultRow, new_rand_client};
 
