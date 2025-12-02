@@ -51,6 +51,20 @@ async fn create_search_cache(conn: &SqlitePool) -> Result<(), sqlx::Error> {
         result_index INTEGER NOT NULL, -- preserves ordering in the page
         PRIMARY KEY (query_id, result_id)
     );
+
+    -- Image Results
+    CREATE TABLE IF NOT EXISTS images (
+        id INTEGER PRIMARY KEY,
+        url TEXT NOT NULL UNIQUE,
+        title TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS query_images (
+        query_id INTEGER NOT NULL REFERENCES queries(id) ON DELETE CASCADE,
+        image_id INTEGER NOT NULL REFERENCES images(id),
+        image_index INTEGER NOT NULL,
+        PRIMARY KEY (query_id, image_id)
+    );
         "#,
     )
     .execute(conn)
@@ -92,6 +106,42 @@ pub async fn upsert_query_with_results(
     for (i, entry) in entries.iter().enumerate() {
         let result_id = insert_result(pool, &entry.title, &entry.url, &entry.description).await?;
         insert_query_result(pool, query_id, result_id, current_count + i as i64).await?;
+    }
+
+    tx.commit().await?;
+
+    Ok(query_id)
+}
+
+pub async fn upsert_query_with_images(
+    pool: &SqlitePool,
+    engine: Engines,
+    query: &str,
+    entries: Vec<ImagesRow>,
+    fetched_at: chrono::NaiveDateTime,
+) -> Result<i64, sqlx::Error> {
+    let engine_id = get_engine_id(pool, engine).await?;
+    let query_row = get_query(pool, query, engine_id).await?;
+
+    // start sql transaction
+    let tx = pool.begin().await?;
+
+    let query_id = if let Some(qi) = query_row {
+        qi.id
+    } else {
+        insert_query(pool, query, engine_id, fetched_at).await?
+    };
+
+    // Determine starting index for new images
+    let current_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM query_images WHERE query_id = ?")
+            .bind(query_id)
+            .fetch_one(pool)
+            .await?;
+
+    for (i, entry) in entries.iter().enumerate() {
+        let image_id = insert_image(pool, &entry.title, &entry.url).await?;
+        insert_query_image(pool, query_id, image_id, current_count + i as i64).await?;
     }
 
     tx.commit().await?;
@@ -172,6 +222,51 @@ pub async fn insert_query(
     .last_insert_rowid();
 
     Ok(id)
+}
+
+#[derive(Debug, Clone, sqlx::FromRow, Serialize)]
+pub struct ImagesRow {
+    pub url: String,
+    pub title: String,
+}
+
+pub async fn get_images_for_query(
+    pool: &SqlitePool,
+    query_id: i64,
+) -> Result<Vec<ImagesRow>, sqlx::Error> {
+    let rows: Vec<ImagesRow> = sqlx::query_as(
+        r#"
+        SELECT i.url, i.title
+        FROM images i
+        INNER JOIN query_images ir ON i.id = ir.image_id
+        WHERE ir.query_id = ?
+        ORDER BY ir.image_index ASC
+        "#,
+    )
+    .bind(query_id)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+pub async fn insert_image(pool: &SqlitePool, title: &str, url: &str) -> Result<i64, sqlx::Error> {
+    let res = sqlx::query("INSERT OR IGNORE INTO images (url, title) VALUES (?, ?)")
+        .bind(url)
+        .bind(title)
+        .execute(pool)
+        .await?;
+
+    if res.rows_affected() == 0 {
+        // Already exists - fetch id
+        let row: (i64,) = sqlx::query_as("SELECT id FROM images WHERE url = ?")
+            .bind(url)
+            .fetch_one(pool)
+            .await?;
+        Ok(row.0)
+    } else {
+        Ok(res.last_insert_rowid())
+    }
 }
 
 #[derive(Debug, Clone, sqlx::FromRow, Serialize)]
@@ -266,10 +361,53 @@ pub async fn get_result_for_query(
     )
 }
 
+#[derive(sqlx::FromRow)]
+pub struct QueryImageRow {
+    pub query_id: i64,
+    pub image_id: i64,
+}
+
+pub async fn insert_query_image(
+    pool: &SqlitePool,
+    query_id: i64,
+    image_id: i64,
+    image_index: i64,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO query_images (query_id, image_id, image_index)
+        VALUES (?, ?, ?)
+        "#,
+    )
+    .bind(query_id)
+    .bind(image_id)
+    .bind(image_index)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+pub async fn get_image_for_query(
+    pool: &SqlitePool,
+    query_id: i64,
+) -> Result<Vec<QueryImageRow>, sqlx::Error> {
+    Ok(
+        sqlx::query_as("SELECT query_id, image_id FROM query_images WHERE query_id = ?")
+            .bind(query_id)
+            .fetch_all(pool)
+            .await?,
+    )
+}
+
 #[cfg(test)]
 mod test {
     use crate::{
-        cache::{ResultRow, create_search_cache, get_results_for_query, upsert_query_with_results},
+        cache::{
+            ImagesRow, ResultRow, create_search_cache, get_engine_id, get_image_for_query,
+            get_images_for_query, get_results_for_query, insert_image, insert_query,
+            insert_query_image, upsert_query_with_images, upsert_query_with_results,
+        },
         engines::Engines,
     };
     use chrono::Utc;
@@ -398,5 +536,156 @@ mod test {
         assert_eq!(fetched.len(), page1.len() + page2.len());
         assert_eq!(fetched[0].url, page1[0].url);
         assert_eq!(fetched.last().unwrap().url, page2.last().unwrap().url);
+    }
+
+    #[sqlx::test]
+    async fn test_insert_image_and_dedup() {
+        let pool = new_db().await;
+
+        let title = "Test Image";
+        let url = "https://example.com/img.png";
+
+        // First insert
+        let id1 = insert_image(&pool, title, url)
+            .await
+            .expect("first insert failed");
+
+        assert!(id1 > 0);
+
+        // Second insert (should dedup)
+        let id2 = insert_image(&pool, title, url)
+            .await
+            .expect("second insert failed");
+
+        assert_eq!(id1, id2);
+    }
+
+    #[sqlx::test]
+    async fn test_insert_query_image() {
+        let pool = new_db().await;
+
+        // Insert engine & query
+        let engine_id = get_engine_id(&pool, Engines::Brave).await.unwrap();
+        let fetched_at = chrono::Utc::now().naive_utc();
+        let query_id = insert_query(&pool, "image-query", engine_id, fetched_at)
+            .await
+            .unwrap();
+
+        // Insert image
+        let image_id = insert_image(&pool, "img-title", "https://img.com")
+            .await
+            .unwrap();
+
+        // Insert mapping
+        insert_query_image(&pool, query_id, image_id, 0)
+            .await
+            .unwrap();
+
+        // Fetch back
+        let rows = get_image_for_query(&pool, query_id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].query_id, query_id);
+        assert_eq!(rows[0].image_id, image_id);
+    }
+
+    #[sqlx::test]
+    async fn test_get_images_for_query() {
+        let pool = new_db().await;
+
+        let engine_id = get_engine_id(&pool, Engines::Brave).await.unwrap();
+        let fetched_at = chrono::Utc::now().naive_utc();
+        let query_id = insert_query(&pool, "img-fetch-test", engine_id, fetched_at)
+            .await
+            .unwrap();
+
+        // Insert two images
+        let img1 = insert_image(&pool, "A", "https://a.com").await.unwrap();
+        let img2 = insert_image(&pool, "B", "https://b.com").await.unwrap();
+
+        insert_query_image(&pool, query_id, img1, 0).await.unwrap();
+        insert_query_image(&pool, query_id, img2, 1).await.unwrap();
+
+        // Fetch images
+        let images = get_images_for_query(&pool, query_id).await.unwrap();
+
+        assert_eq!(images.len(), 2);
+        assert_eq!(images[0].title, "A");
+        assert_eq!(images[1].title, "B");
+    }
+
+    #[sqlx::test]
+    async fn test_upsert_query_with_images_basic() {
+        let pool = new_db().await;
+
+        let entries = vec![
+            ImagesRow {
+                url: "https://a.com".into(),
+                title: "A".into(),
+            },
+            ImagesRow {
+                url: "https://b.com".into(),
+                title: "B".into(),
+            },
+        ];
+
+        let query = "img-upsert";
+        let fetched_at = chrono::Utc::now().naive_utc();
+
+        let query_id =
+            upsert_query_with_images(&pool, Engines::Brave, query, entries.clone(), fetched_at)
+                .await
+                .unwrap();
+
+        assert!(query_id > 0);
+
+        // Fetch back
+        let imgs = get_images_for_query(&pool, query_id).await.unwrap();
+
+        assert_eq!(imgs.len(), 2);
+        assert_eq!(imgs[0].url, entries[0].url);
+        assert_eq!(imgs[1].url, entries[1].url);
+    }
+
+    #[sqlx::test]
+    async fn test_upsert_query_with_images_append() {
+        let pool = new_db().await;
+
+        let page1 = vec![ImagesRow {
+            url: "https://a.com".into(),
+            title: "A".into(),
+        }];
+
+        let page2 = vec![
+            ImagesRow {
+                url: "https://b.com".into(),
+                title: "B".into(),
+            },
+            ImagesRow {
+                url: "https://c.com".into(),
+                title: "C".into(),
+            },
+        ];
+
+        let query = "img-append-test";
+        let fetched_at = chrono::Utc::now().naive_utc();
+
+        let id1 = upsert_query_with_images(&pool, Engines::Brave, query, page1.clone(), fetched_at)
+            .await
+            .unwrap();
+
+        let id2 = upsert_query_with_images(&pool, Engines::Brave, query, page2.clone(), fetched_at)
+            .await
+            .unwrap();
+
+        // Same query id
+        assert_eq!(id1, id2);
+
+        // Should now contain 3 total images, in order
+        let imgs = get_images_for_query(&pool, id1).await.unwrap();
+
+        assert_eq!(imgs.len(), 3);
+        assert_eq!(imgs[0].title, "A");
+        assert_eq!(imgs[1].title, "B");
+        assert_eq!(imgs[2].title, "C");
     }
 }
