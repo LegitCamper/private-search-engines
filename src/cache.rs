@@ -1,9 +1,6 @@
 use serde;
 use serde::Serialize;
 use sqlx::{SqlitePool, prelude::FromRow};
-use strum::IntoEnumIterator;
-
-use crate::engines::Engines;
 
 const SQLITE_DB_NAME: &'static str = "cache.db";
 
@@ -70,16 +67,12 @@ async fn create_search_cache(conn: &SqlitePool) -> Result<(), sqlx::Error> {
     .execute(conn)
     .await?;
 
-    for engine in Engines::iter() {
-        insert_engine(conn, engine).await?;
-    }
-
     Ok(())
 }
 
 pub async fn upsert_query_with_results(
     pool: &SqlitePool,
-    engine: Engines,
+    engine: &str,
     query: &str,
     entries: Vec<ResultRow>,
     fetched_at: chrono::NaiveDateTime,
@@ -115,7 +108,7 @@ pub async fn upsert_query_with_results(
 
 pub async fn upsert_query_with_images(
     pool: &SqlitePool,
-    engine: Engines,
+    engine: &str,
     query: &str,
     entries: Vec<ImagesRow>,
     fetched_at: chrono::NaiveDateTime,
@@ -152,19 +145,29 @@ pub async fn upsert_query_with_images(
 #[derive(FromRow)]
 pub struct EngineRow {
     pub id: i64,
-    pub name: Engines,
+    pub name: String,
 }
 
-pub async fn get_engine_id(pool: &SqlitePool, engine: Engines) -> Result<i64, sqlx::Error> {
-    let row: EngineRow = sqlx::query_as("SELECT id, name FROM engines WHERE name = ?")
+pub async fn get_engine_id(pool: &SqlitePool, engine: &str) -> Result<i64, sqlx::Error> {
+    let row: Option<(i64,)> = sqlx::query_as("SELECT id FROM engines WHERE name = ?")
         .bind(engine)
-        .fetch_one(pool)
+        .fetch_optional(pool)
         .await?;
 
-    Ok(row.id)
+    if let Some((id,)) = row {
+        return Ok(id);
+    }
+
+    let id = sqlx::query("INSERT INTO engines (name) VALUES (?)")
+        .bind(engine)
+        .execute(pool)
+        .await?
+        .last_insert_rowid();
+
+    Ok(id)
 }
 
-pub async fn insert_engine(pool: &SqlitePool, engine: Engines) -> Result<i64, sqlx::Error> {
+pub async fn insert_engine(pool: &SqlitePool, engine: &str) -> Result<i64, sqlx::Error> {
     let id = sqlx::query("INSERT OR IGNORE INTO engines (name) VALUES (?)")
         .bind(engine)
         .execute(pool)
@@ -402,13 +405,10 @@ pub async fn get_image_for_query(
 
 #[cfg(test)]
 mod test {
-    use crate::{
-        cache::{
-            ImagesRow, ResultRow, create_search_cache, get_engine_id, get_image_for_query,
-            get_images_for_query, get_results_for_query, insert_image, insert_query,
-            insert_query_image, upsert_query_with_images, upsert_query_with_results,
-        },
-        engines::Engines,
+    use crate::cache::{
+        ImagesRow, ResultRow, create_search_cache, get_engine_id, get_image_for_query,
+        get_images_for_query, get_results_for_query, insert_image, insert_query,
+        insert_query_image, upsert_query_with_images, upsert_query_with_results,
     };
     use chrono::Utc;
     use sqlx::SqlitePool;
@@ -456,7 +456,7 @@ mod test {
 
         // upsert the query and results
         let query_id =
-            upsert_query_with_results(&pool, Engines::Brave, query, results.clone(), fetched_at)
+            upsert_query_with_results(&pool, "Brave", query, results.clone(), fetched_at)
                 .await
                 .expect("Failed to upsert query");
 
@@ -483,13 +483,13 @@ mod test {
 
         // first insert
         let first_id =
-            upsert_query_with_results(&pool, Engines::Brave, query, results.clone(), fetched_at)
+            upsert_query_with_results(&pool, "Brave", query, results.clone(), fetched_at)
                 .await
                 .unwrap();
 
         // second insert with same query/results
         let second_id =
-            upsert_query_with_results(&pool, Engines::Brave, query, results.clone(), fetched_at)
+            upsert_query_with_results(&pool, "Brave", query, results.clone(), fetched_at)
                 .await
                 .unwrap();
 
@@ -522,12 +522,12 @@ mod test {
 
         // Insert page 1
         let query_id =
-            upsert_query_with_results(&pool, Engines::DuckDuckGo, query, page1.clone(), fetched_at)
+            upsert_query_with_results(&pool, "DuckDuckGo", query, page1.clone(), fetched_at)
                 .await
                 .unwrap();
 
         // Append page 2
-        upsert_query_with_results(&pool, Engines::DuckDuckGo, query, page2.clone(), fetched_at)
+        upsert_query_with_results(&pool, "DuckDuckGo", query, page2.clone(), fetched_at)
             .await
             .unwrap();
 
@@ -565,7 +565,7 @@ mod test {
         let pool = new_db().await;
 
         // Insert engine & query
-        let engine_id = get_engine_id(&pool, Engines::Brave).await.unwrap();
+        let engine_id = get_engine_id(&pool, "Brave").await.unwrap();
         let fetched_at = chrono::Utc::now().naive_utc();
         let query_id = insert_query(&pool, "image-query", engine_id, fetched_at)
             .await
@@ -592,7 +592,7 @@ mod test {
     async fn test_get_images_for_query() {
         let pool = new_db().await;
 
-        let engine_id = get_engine_id(&pool, Engines::Brave).await.unwrap();
+        let engine_id = get_engine_id(&pool, "Brave").await.unwrap();
         let fetched_at = chrono::Utc::now().naive_utc();
         let query_id = insert_query(&pool, "img-fetch-test", engine_id, fetched_at)
             .await
@@ -631,10 +631,9 @@ mod test {
         let query = "img-upsert";
         let fetched_at = chrono::Utc::now().naive_utc();
 
-        let query_id =
-            upsert_query_with_images(&pool, Engines::Brave, query, entries.clone(), fetched_at)
-                .await
-                .unwrap();
+        let query_id = upsert_query_with_images(&pool, "Brave", query, entries.clone(), fetched_at)
+            .await
+            .unwrap();
 
         assert!(query_id > 0);
 
@@ -669,11 +668,11 @@ mod test {
         let query = "img-append-test";
         let fetched_at = chrono::Utc::now().naive_utc();
 
-        let id1 = upsert_query_with_images(&pool, Engines::Brave, query, page1.clone(), fetched_at)
+        let id1 = upsert_query_with_images(&pool, "Brave", query, page1.clone(), fetched_at)
             .await
             .unwrap();
 
-        let id2 = upsert_query_with_images(&pool, Engines::Brave, query, page2.clone(), fetched_at)
+        let id2 = upsert_query_with_images(&pool, "Brave", query, page2.clone(), fetched_at)
             .await
             .unwrap();
 

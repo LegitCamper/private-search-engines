@@ -1,22 +1,15 @@
+use async_trait::async_trait;
 use rand::seq::IndexedRandom;
 use reqwest::Client;
 use scraper::{Html, Selector};
-use serde::Serialize;
-use strum::EnumIter;
 
-use crate::cache::{self, ResultRow};
+use crate::cache::{self, ImagesRow, ResultRow};
 
 mod brave;
 mod duckduckgo;
 
 pub use brave::Brave;
 pub use duckduckgo::DuckDuckGo;
-
-#[derive(Debug, Copy, Clone, Serialize, EnumIter, sqlx::Type)]
-pub enum Engines {
-    DuckDuckGo,
-    Brave,
-}
 
 #[derive(Debug)]
 pub enum EngineError {
@@ -25,9 +18,19 @@ pub enum EngineError {
     Timeout, // engine timeout
 }
 
-pub trait Engine {
-    fn name() -> Engines;
-    async fn search(query: &str) -> Result<Vec<ResultRow>, EngineError>;
+#[async_trait]
+pub trait EngineInfo: Clone + Send {
+    fn name(&self) -> &'static str;
+}
+
+#[async_trait]
+pub trait SearchEngine: EngineInfo + Clone + Send {
+    async fn search_results(&self, query: &str) -> Result<Vec<ResultRow>, EngineError>;
+}
+
+#[async_trait]
+pub trait ImageEngine: EngineInfo + Clone + Send {
+    async fn search_images(&self, query: &str) -> Result<Vec<ImagesRow>, EngineError>;
 }
 
 fn new_rand_client() -> Result<Client, reqwest::Error> {
@@ -42,57 +45,80 @@ fn new_rand_client() -> Result<Client, reqwest::Error> {
     Client::builder().user_agent(*user_agent).build()
 }
 
-pub struct HtmlParser {
-    results_selector: Selector,
-    title_selector: Selector,
-    href_selector: Selector,
-    description_selector: Selector,
+const PARSE_ERROR: &'static str = "Couldnt parse selector string";
+
+pub fn parse_search(
+    html: &str,
+    results_selector: &'static str,
+    title_selector: &'static str,
+    href_selector: &'static str,
+    description_selector: &'static str,
+) -> Vec<ResultRow> {
+    let html = Html::parse_document(html);
+
+    let results_selector = Selector::parse(results_selector).expect(PARSE_ERROR);
+    let title_selector = Selector::parse(title_selector).expect(PARSE_ERROR);
+    let href_selector = Selector::parse(href_selector).expect(PARSE_ERROR);
+    let description_selector = Selector::parse(description_selector).expect(PARSE_ERROR);
+
+    let mut results = Vec::new();
+
+    for result in html.select(&results_selector) {
+        results.push(ResultRow {
+            url: result
+                .select(&href_selector)
+                .next()
+                .and_then(|u| u.value().attr("href"))
+                .unwrap_or_default()
+                .to_string(),
+
+            title: result
+                .select(&title_selector)
+                .next()
+                .map(|t| t.text().collect::<String>())
+                .unwrap_or_default(),
+
+            description: result
+                .select(&description_selector)
+                .next()
+                .map(|d| d.text().collect::<String>())
+                .unwrap_or_default(),
+        })
+    }
+
+    results
 }
 
-impl HtmlParser {
-    pub fn new(
-        results_selector: &'static str,
-        title_selector: &'static str,
-        href_selector: &'static str,
-        description_selector: &'static str,
-    ) -> Self {
-        const PARSE_ERROR: &'static str = "Couldnt parse selector string";
-        Self {
-            results_selector: Selector::parse(results_selector).expect(PARSE_ERROR),
-            title_selector: Selector::parse(title_selector).expect(PARSE_ERROR),
-            href_selector: Selector::parse(href_selector).expect(PARSE_ERROR),
-            description_selector: Selector::parse(description_selector).expect(PARSE_ERROR),
-        }
+pub fn parse_images(
+    html: &str,
+    images_selector: &'static str,
+    title_selector: &'static str,
+    img_selector: &'static str,
+) -> Vec<ImagesRow> {
+    let html = Html::parse_document(html);
+
+    let images_selector = Selector::parse(images_selector).expect(PARSE_ERROR);
+    let title_selector = Selector::parse(title_selector).expect(PARSE_ERROR);
+    let img_selector = Selector::parse(img_selector).expect(PARSE_ERROR);
+
+    let mut images = Vec::new();
+
+    for result in html.select(&images_selector) {
+        images.push(ImagesRow {
+            url: result
+                .select(&img_selector)
+                .next()
+                .and_then(|u| u.value().attr("src"))
+                .unwrap_or_default()
+                .to_string(),
+
+            title: result
+                .select(&title_selector)
+                .next()
+                .map(|t| t.text().collect::<String>())
+                .unwrap_or_default(),
+        })
     }
 
-    pub fn parse(&self, html: &str) -> Vec<ResultRow> {
-        let html = Html::parse_document(html);
-
-        let mut results = Vec::new();
-
-        for result in html.select(&self.results_selector) {
-            results.push(ResultRow {
-                url: result
-                    .select(&self.href_selector)
-                    .next()
-                    .and_then(|u| u.value().attr("href"))
-                    .unwrap_or_default()
-                    .to_string(),
-
-                title: result
-                    .select(&self.title_selector)
-                    .next()
-                    .map(|t| t.text().collect::<String>())
-                    .unwrap_or_default(),
-
-                description: result
-                    .select(&self.description_selector)
-                    .next()
-                    .map(|d| d.text().collect::<String>())
-                    .unwrap_or_default(),
-            })
-        }
-
-        results
-    }
+    images
 }

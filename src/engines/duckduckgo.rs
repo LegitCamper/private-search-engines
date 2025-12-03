@@ -1,16 +1,23 @@
+use async_trait::async_trait;
 use percent_encoding::percent_decode;
 use reqwest::Url;
 
-use crate::engines::{Engine, EngineError, Engines, HtmlParser, cache::ResultRow, new_rand_client};
+use crate::engines::{
+    EngineError, EngineInfo, SearchEngine, cache::ResultRow, new_rand_client, parse_search,
+};
 
+#[derive(Clone)]
 pub struct DuckDuckGo;
 
-impl Engine for DuckDuckGo {
-    fn name() -> Engines {
-        Engines::DuckDuckGo
+impl EngineInfo for DuckDuckGo {
+    fn name(&self) -> &'static str {
+        "DuckDuckGo"
     }
+}
 
-    async fn search(query: &str) -> Result<Vec<ResultRow>, EngineError> {
+#[async_trait]
+impl SearchEngine for DuckDuckGo {
+    async fn search_results(&self, query: &str) -> Result<Vec<ResultRow>, EngineError> {
         let resp = new_rand_client()
             .map_err(EngineError::ReqwestError)?
             .get(&format!("https://html.duckduckgo.com/html?q={}", query))
@@ -23,22 +30,20 @@ impl Engine for DuckDuckGo {
 }
 
 pub fn parse_response(html: &str) -> Result<Vec<ResultRow>, EngineError> {
-    let parser = HtmlParser::new(
+    let results = parse_search(
+        html,
         ".serp__results .result",
         ".result__a",
         ".result__a",
         ".result__snippet",
-    );
-
-    let results = parser
-        .parse(html)
-        .into_iter()
-        .filter(|r| !is_sponsored(&r.url))
-        .map(|mut r| {
-            r.url = extract_ddg_url(&r.url).unwrap();
-            r
-        })
-        .collect();
+    )
+    .into_iter()
+    .filter(|r| !is_sponsored(&r.url))
+    .map(|mut r| {
+        r.url = extract_ddg_url(&r.url).unwrap();
+        r
+    })
+    .collect();
 
     Ok(results)
 }
@@ -69,8 +74,9 @@ mod test {
     #[ignore]
     #[tokio::test]
     async fn test_duckduckgo_live() {
-        use super::{DuckDuckGo, Engine};
-        let results = DuckDuckGo::search("rust async").await.unwrap();
+        use super::{DuckDuckGo, SearchEngine};
+        let ddg = DuckDuckGo;
+        let results = ddg.search_results("rust async").await.unwrap();
         assert!(!results.is_empty());
 
         println!("Results: ");
