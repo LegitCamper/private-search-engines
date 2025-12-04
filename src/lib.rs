@@ -251,7 +251,7 @@ pub async fn search_engine_images(
         // Box the future to unify types
         let fut: Pin<Box<dyn Future<Output = Result<Vec<ImageResult>, FetchError>> + Send>> =
             match engine {
-                ImageEngines::Brave => Box::pin(fetch_or_cache_image(Brave, query, 0, 10)),
+                ImageEngines::Brave => Box::pin(fetch_or_cache_image(Brave, query, 0, 50)),
             };
 
         // Spawn the boxed future
