@@ -9,7 +9,7 @@ const SQLITE_DB_ENV: &str = "CACHE_DB_PATH";
 pub async fn init() -> Result<SqlitePool, sqlx::Error> {
     let db_path = env::var(SQLITE_DB_ENV).unwrap_or_else(|_| DEFAULT_SQLITE_DB_NAME.to_string());
 
-    let url = format!("sqlite://{}", db_path);
+    let url = format!("sqlite://{}?mode=rwc", db_path);
 
     let conn = SqlitePool::connect(&url)
         .await
