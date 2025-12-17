@@ -62,11 +62,10 @@ fn extract_ddg_url(ddg_href: &str) -> Option<String> {
     Some(ddg_href.to_string()) // fallback to raw href
 }
 
-fn is_sponsored(ddg_href: &str) -> bool {
-    if ddg_href.contains("?ad_domain") || ddg_href.contains("?ad_provider") {
-        return true;
-    }
-    false
+fn is_sponsored(href: &str) -> bool {
+    href.contains("duckduckgo.com/l/?")
+        || href.contains("duckduckgo.com/y.js")
+        || href.contains("duckduckgo.com/?uddg=")
 }
 
 #[cfg(test)]
