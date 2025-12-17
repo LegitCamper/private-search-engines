@@ -1,11 +1,17 @@
 use serde;
 use serde::Serialize;
 use sqlx::{SqlitePool, prelude::FromRow};
+use std::env;
 
-const SQLITE_DB_NAME: &'static str = "cache.db";
+const DEFAULT_SQLITE_DB_NAME: &'static str = "data/cache.db";
+const SQLITE_DB_ENV: &str = "CACHE_DB_PATH";
 
 pub async fn init() -> Result<SqlitePool, sqlx::Error> {
-    let conn = SqlitePool::connect(SQLITE_DB_NAME)
+    let db_path = env::var(SQLITE_DB_ENV).unwrap_or_else(|_| DEFAULT_SQLITE_DB_NAME.to_string());
+
+    let url = format!("sqlite://{}", db_path);
+
+    let conn = SqlitePool::connect(&url)
         .await
         .expect("FAILED TO CONNECT TO DB");
 
