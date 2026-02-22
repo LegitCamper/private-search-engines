@@ -128,7 +128,9 @@ pub async fn search_engine_results(
         return Err(FetchError::AllEnginesFailed);
     }
 
-    Ok(merge_results(flat))
+    let merged = merge_results(flat);
+    let sorted = sort_results(merged, &query);
+    Ok(sorted)
 }
 
 fn merge_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
@@ -152,6 +154,41 @@ fn merge_results(results: Vec<SearchResult>) -> Vec<SearchResult> {
     }
 
     map.into_values().collect()
+}
+
+pub fn sort_results(mut results: Vec<SearchResult>, query: &str) -> Vec<SearchResult> {
+    let stop = ["the", "and", "or", "of", "for", "in", "on", "at"];
+    let words: Vec<String> = query
+        .split_whitespace()
+        .filter(|w| !stop.contains(&w.to_lowercase().as_str()))
+        .map(str::to_lowercase)
+        .collect();
+
+    fn score(url: &str, words: &[String]) -> u8 {
+        let dom = url
+            .trim_start_matches("http://")
+            .trim_start_matches("https://")
+            .split('/')
+            .next()
+            .unwrap_or("")
+            .to_lowercase();
+
+        let hits = words.iter().filter(|w| dom.contains(*w)).count();
+        if hits == words.len() {
+            2
+        }
+        // all words
+        else if hits > 0 {
+            1
+        }
+        // some words
+        else {
+            0
+        }
+    }
+
+    results.sort_by_cached_key(|r| std::cmp::Reverse(score(&r.url, &words)));
+    results
 }
 
 /// Checks the cache first; if miss, fetches from the engine and caches results.
