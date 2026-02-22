@@ -21,7 +21,7 @@ impl SearchEngine for Brave {
     async fn search_results(&self, query: &str) -> Result<Vec<ResultRow>, EngineError> {
         let resp = new_rand_client()
             .map_err(EngineError::ReqwestError)?
-            .get(&format!("https://search.brave.com/search?q={}", query))
+            .get(format!("https://search.brave.com/search?q={}", query))
             .send()
             .await
             .map_err(EngineError::ReqwestError)?;
@@ -45,7 +45,7 @@ impl ImageEngine for Brave {
     async fn search_images(&self, query: &str) -> Result<Vec<ImagesRow>, EngineError> {
         let resp = new_rand_client()
             .map_err(EngineError::ReqwestError)?
-            .get(&format!("https://search.brave.com/images?q={}", query))
+            .get(format!("https://search.brave.com/images?q={}", query))
             .send()
             .await
             .map_err(EngineError::ReqwestError)?;

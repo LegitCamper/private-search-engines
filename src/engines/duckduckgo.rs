@@ -20,7 +20,7 @@ impl SearchEngine for DuckDuckGo {
     async fn search_results(&self, query: &str) -> Result<Vec<ResultRow>, EngineError> {
         let resp = new_rand_client()
             .map_err(EngineError::ReqwestError)?
-            .get(&format!("https://html.duckduckgo.com/html?q={}", query))
+            .get(format!("https://html.duckduckgo.com/html?q={}", query))
             .send()
             .await
             .map_err(EngineError::ReqwestError)?;

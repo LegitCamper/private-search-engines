@@ -1,9 +1,8 @@
-use serde;
 use serde::Serialize;
 use sqlx::{SqlitePool, prelude::FromRow};
 use std::env;
 
-const DEFAULT_SQLITE_DB_NAME: &'static str = "data/cache.db";
+const DEFAULT_SQLITE_DB_NAME: &str = "data/cache.db";
 const SQLITE_DB_ENV: &str = "CACHE_DB_PATH";
 
 pub async fn init() -> Result<SqlitePool, sqlx::Error> {
@@ -362,12 +361,10 @@ pub async fn get_result_for_query(
     pool: &SqlitePool,
     query_id: i64,
 ) -> Result<Vec<QueryResultRow>, sqlx::Error> {
-    Ok(
-        sqlx::query_as("SELECT query_id, result_id FROM query_results WHERE query_id = ?")
-            .bind(query_id)
-            .fetch_all(pool)
-            .await?,
-    )
+    sqlx::query_as("SELECT query_id, result_id FROM query_results WHERE query_id = ?")
+        .bind(query_id)
+        .fetch_all(pool)
+        .await
 }
 
 #[derive(sqlx::FromRow)]
@@ -401,12 +398,10 @@ pub async fn get_image_for_query(
     pool: &SqlitePool,
     query_id: i64,
 ) -> Result<Vec<QueryImageRow>, sqlx::Error> {
-    Ok(
-        sqlx::query_as("SELECT query_id, image_id FROM query_images WHERE query_id = ?")
-            .bind(query_id)
-            .fetch_all(pool)
-            .await?,
-    )
+    sqlx::query_as("SELECT query_id, image_id FROM query_images WHERE query_id = ?")
+        .bind(query_id)
+        .fetch_all(pool)
+        .await
 }
 
 #[cfg(test)]

@@ -45,7 +45,7 @@ fn new_rand_client() -> Result<Client, reqwest::Error> {
     Client::builder().user_agent(*user_agent).build()
 }
 
-const PARSE_ERROR: &'static str = "Couldnt parse selector string";
+const PARSE_ERROR: &str = "Couldnt parse selector string";
 
 pub fn parse_search(
     html: &str,
